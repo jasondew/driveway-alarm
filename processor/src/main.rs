@@ -1,11 +1,36 @@
 extern crate paho_mqtt as mqtt;
 
+use chrono::{DateTime, Utc};
+use influxdb::{Client, InfluxDbWriteable};
 use std::{process, thread, time::Duration};
 
 const TOPIC: &str = "driveway-alarm/transmission";
 const QOS: i32 = 1;
 
-fn process(msg: &mqtt::Message) {
+struct Data {
+    timestamp: i32,
+    battery_voltage: f32,
+    cpu_temperature: f32,
+    rssi: i32,
+    snr: i32,
+}
+
+#[derive(InfluxDbWriteable)]
+struct Reading {
+    time: DateTime<Utc>,
+    battery_voltage: f32,
+    cpu_temperature: f32,
+    rssi: i32,
+    snr: i32,
+}
+
+async fn process(msg: &mqtt::Message, client: &Client) {
+    if let Some(data) = parse(msg) {
+        publish(&data, client).await;
+    }
+}
+
+fn parse(msg: &mqtt::Message) -> Option<Data> {
     let message: String = msg.payload_str().into_owned();
     let fields: Vec<&str> = message.split(",").collect();
 
@@ -15,20 +40,46 @@ fn process(msg: &mqtt::Message) {
             let data: Vec<&str> = payload.split(":").collect();
 
             match data[..] {
-                [timestamp, battery_voltage, cpu_temperature] =>
+                [timestamp, battery_voltage, cpu_temperature] => {
                     println!(
                         "MESSAGE (from={} length={} rssi={} snr={}): timestamp={} battery_voltage={} cpu_temperature={}",
                         from, length, rssi, snr, timestamp, battery_voltage, cpu_temperature
-                    ),
-                _ =>
+                    );
+                    Some(Data {
+                        timestamp: timestamp.parse().unwrap(),
+                        battery_voltage: battery_voltage.parse().unwrap(),
+                        cpu_temperature: cpu_temperature.parse().unwrap(),
+                        rssi: rssi.parse().unwrap(),
+                        snr: snr.parse().unwrap(),
+                    })
+                }
+                _ => {
                     println!(
                         "INVALID PAYLOAD (from={} length={} rssi={} snr={}): {}",
                         from, length, rssi, snr, payload
-                    ),
+                    );
+                    None
+                }
             }
         }
-        _ => println!("INVALID MESSAGE: {}", message),
+        _ => {
+            println!("INVALID MESSAGE: {}", message);
+            None
+        }
     }
+}
+
+async fn publish(data: &Data, client: &Client) {
+    let reading = Reading {
+        time: Utc::now(),
+        battery_voltage: data.battery_voltage,
+        cpu_temperature: data.cpu_temperature,
+        rssi: data.rssi,
+        snr: data.snr,
+    };
+
+    let write_result = client.query(&reading.into_query("reading")).await;
+    assert!(write_result.is_ok(), "Couldn't write data to InfluxDB");
 }
 
 fn try_reconnect(cli: &mqtt::Client) -> bool {
@@ -51,7 +102,9 @@ fn subscribe(cli: &mqtt::Client) {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
+    let influxdb = Client::new("http://piplus.local:8086", "driveway_alarm");
     let create_opts = mqtt::CreateOptionsBuilder::new()
         .server_uri("tcp://piplus.local:1883")
         .client_id("driveway_alarm_processor")
@@ -84,7 +137,7 @@ fn main() {
     println!("Processing requests...");
     for msg in receiver.iter() {
         if let Some(msg) = msg {
-            process(&msg);
+            process(&msg, &influxdb).await;
         } else if !cli.is_connected() {
             if try_reconnect(&cli) {
                 println!("Resubscribe topics...");
