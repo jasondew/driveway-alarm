@@ -10,6 +10,7 @@ const QOS: i32 = 1;
 struct Data {
     timestamp: i32,
     battery_voltage: f32,
+    sonar_voltage: i32,
     cpu_temperature: f32,
     rssi: i32,
     snr: i32,
@@ -19,6 +20,7 @@ struct Data {
 struct Reading {
     time: DateTime<Utc>,
     battery_voltage: f32,
+    sonar_voltage: i32,
     cpu_temperature: f32,
     rssi: i32,
     snr: i32,
@@ -32,32 +34,32 @@ async fn process(msg: &mqtt::Message, client: &Client) {
 
 fn parse(msg: &mqtt::Message) -> Option<Data> {
     let message: String = msg.payload_str().into_owned();
-    let fields: Vec<&str> = message.split(",").collect();
+    let front_fields: Vec<&str> = message.splitn(3, ",").collect();
 
-    // 1,26,1578190458:4.10109:31.8198,-35,46
-    match fields[..] {
-        [from, length, payload, rssi, snr] => {
-            let data: Vec<&str> = payload.split(":").collect();
-
-            match data[..] {
-                [timestamp, battery_voltage, cpu_temperature] => {
+    match front_fields[..] {
+        [from, length, payload_and_back_fields] => {
+            let back_fields: Vec<&str> = payload_and_back_fields.rsplitn(3, ",").collect();
+            match back_fields[..] {
+                [snr, rssi, payload] => {
+                    let json: serde_json::Value = serde_json::from_str(payload).unwrap();
                     println!(
-                        "MESSAGE (from={} length={} rssi={} snr={}): timestamp={} battery_voltage={} cpu_temperature={}",
-                        from, length, rssi, snr, timestamp, battery_voltage, cpu_temperature
+                        "MESSAGE (from={} length={} rssi={} snr={}): {}",
+                        from, length, rssi, snr, json
                     );
                     Some(Data {
-                        timestamp: timestamp.parse().unwrap(),
-                        battery_voltage: battery_voltage.parse().unwrap(),
-                        cpu_temperature: cpu_temperature.parse().unwrap(),
+                        timestamp: serde_json::from_value(json["timestamp"].clone()).unwrap(),
+                        battery_voltage: serde_json::from_value(json["battery_voltage"].clone())
+                            .unwrap(),
+                        sonar_voltage: serde_json::from_value(json["sonar_voltage"].clone())
+                            .unwrap(),
+                        cpu_temperature: serde_json::from_value(json["cpu_temperature"].clone())
+                            .unwrap(),
                         rssi: rssi.parse().unwrap(),
                         snr: snr.parse().unwrap(),
                     })
                 }
                 _ => {
-                    println!(
-                        "INVALID PAYLOAD (from={} length={} rssi={} snr={}): {}",
-                        from, length, rssi, snr, payload
-                    );
+                    println!("INVALID MESSAGE: {}", message);
                     None
                 }
             }
@@ -73,12 +75,13 @@ async fn publish(data: &Data, client: &Client) {
     let reading = Reading {
         time: Utc::now(),
         battery_voltage: data.battery_voltage,
+        sonar_voltage: data.sonar_voltage,
         cpu_temperature: data.cpu_temperature,
         rssi: data.rssi,
         snr: data.snr,
     };
 
-    let write_result = client.query(&reading.into_query("reading")).await;
+    let write_result = client.query(&reading.into_query("readings")).await;
     assert!(write_result.is_ok(), "Couldn't write data to InfluxDB");
 }
 
