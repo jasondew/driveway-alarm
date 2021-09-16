@@ -46,17 +46,26 @@ fn parse(msg: &mqtt::Message) -> Option<Data> {
                         "MESSAGE (from={} length={} rssi={} snr={}): {}",
                         from, length, rssi, snr, json
                     );
-                    Some(Data {
-                        timestamp: serde_json::from_value(json["timestamp"].clone()).unwrap(),
-                        battery_voltage: serde_json::from_value(json["battery_voltage"].clone())
+
+                    if json["event"] == "telemetry" {
+                        Some(Data {
+                            timestamp: serde_json::from_value(json["timestamp"].clone()).unwrap(),
+                            battery_voltage: serde_json::from_value(
+                                json["battery_voltage"].clone(),
+                            )
                             .unwrap(),
-                        sonar_voltage: serde_json::from_value(json["sonar_voltage"].clone())
+                            sonar_voltage: serde_json::from_value(json["sonar_voltage"].clone())
+                                .unwrap(),
+                            cpu_temperature: serde_json::from_value(
+                                json["cpu_temperature"].clone(),
+                            )
                             .unwrap(),
-                        cpu_temperature: serde_json::from_value(json["cpu_temperature"].clone())
-                            .unwrap(),
-                        rssi: rssi.parse().unwrap(),
-                        snr: snr.parse().unwrap(),
-                    })
+                            rssi: rssi.parse().unwrap(),
+                            snr: snr.parse().unwrap(),
+                        })
+                    } else {
+                        None
+                    }
                 }
                 _ => {
                     println!("INVALID MESSAGE: {}", message);
