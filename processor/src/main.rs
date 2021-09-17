@@ -1,6 +1,6 @@
 extern crate paho_mqtt as mqtt;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use influxdb::{Client, InfluxDbWriteable};
 use std::{process, thread, time::Duration};
 
@@ -8,7 +8,7 @@ const TOPIC: &str = "driveway-alarm/transmission";
 const QOS: i32 = 1;
 
 struct Data {
-    timestamp: i32,
+    time: DateTime<Utc>,
     battery_voltage: f32,
     sonar_voltage: i32,
     cpu_temperature: f32,
@@ -48,8 +48,10 @@ fn parse(msg: &mqtt::Message) -> Option<Data> {
                     );
 
                     if json["event"] == "telemetry" {
+                        let timestamp: i32 = serde_json::from_value(json["timestamp"].clone())
+                            .expect("unable to parse timestamp");
                         Some(Data {
-                            timestamp: serde_json::from_value(json["timestamp"].clone()).unwrap(),
+                            time: Utc.datetime_from_str(&timestamp.to_string(), "%s").unwrap(),
                             battery_voltage: serde_json::from_value(
                                 json["battery_voltage"].clone(),
                             )
@@ -82,7 +84,7 @@ fn parse(msg: &mqtt::Message) -> Option<Data> {
 
 async fn publish(data: &Data, client: &Client) {
     let reading = Reading {
-        time: Utc::now(),
+        time: data.time,
         battery_voltage: data.battery_voltage,
         sonar_voltage: data.sonar_voltage,
         cpu_temperature: data.cpu_temperature,
