@@ -3,7 +3,6 @@ defmodule DrivewayAlarmReceiver.MixProject do
 
   @app :driveway_alarm_receiver
   @version "0.1.0"
-  @all_targets [:rpi, :rpi0, :rpi2, :rpi3, :rpi3a, :rpi4, :bbb, :osd32mp1, :x86_64]
 
   def project do
     [
@@ -31,28 +30,19 @@ defmodule DrivewayAlarmReceiver.MixProject do
   defp deps do
     [
       # Dependencies for all targets
+      {:jason, "~> 1.2.2"},
       {:nerves, "~> 1.7.0", runtime: false},
       {:shoehorn, "~> 0.7.0"},
       {:ring_logger, "~> 0.8.1"},
       {:toolshed, "~> 0.2.13"},
       {:tortoise, "~> 0.9"},
 
-      # Dependencies for all targets except :host
-      {:nerves_runtime, "~> 0.11.3", targets: @all_targets},
-      {:nerves_pack, "~> 0.4.0", targets: @all_targets},
-      {:nerves_uart, "~> 1.2", targets: @all_targets},
-      {:nerves_leds, "~> 0.8", targets: @all_targets},
-
-      # Dependencies for specific targets
-      {:nerves_system_rpi, "~> 1.13", runtime: false, targets: :rpi},
-      {:nerves_system_rpi0, "~> 1.13", runtime: false, targets: :rpi0},
-      {:nerves_system_rpi2, "~> 1.13", runtime: false, targets: :rpi2},
-      {:nerves_system_rpi3, "~> 1.13", runtime: false, targets: :rpi3},
-      {:nerves_system_rpi3a, "~> 1.13", runtime: false, targets: :rpi3a},
-      {:nerves_system_rpi4, "~> 1.13", runtime: false, targets: :rpi4},
-      {:nerves_system_bbb, "~> 2.8", runtime: false, targets: :bbb},
-      {:nerves_system_osd32mp1, "~> 0.4", runtime: false, targets: :osd32mp1},
-      {:nerves_system_x86_64, "~> 1.13", runtime: false, targets: :x86_64}
+      # target-only deps
+      {:nerves_runtime, "~> 0.11.3", targets: :rpi0},
+      {:nerves_pack, "~> 0.4.0", targets: :rpi0},
+      {:nerves_uart, "~> 1.2", targets: :rpi0},
+      {:nerves_leds, "~> 0.8", targets: :rpi0},
+      {:nerves_system_rpi0, "~> 1.13", runtime: false, targets: :rpi0}
     ]
   end
 
