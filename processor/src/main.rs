@@ -7,32 +7,25 @@ use std::{process, thread, time::Duration};
 const TOPIC: &str = "driveway-alarm/transmission";
 const QOS: i32 = 1;
 
-struct Data {
-    time: DateTime<Utc>,
-    battery_voltage: f32,
-    sonar_voltage: i32,
-    cpu_temperature: f32,
-    rssi: i32,
-    snr: i32,
-}
-
 #[derive(InfluxDbWriteable)]
 struct Reading {
     time: DateTime<Utc>,
     battery_voltage: f32,
     sonar_voltage: i32,
     cpu_temperature: f32,
+    case_temperature: f32,
+    case_humidity: f32,
     rssi: i32,
     snr: i32,
 }
 
 async fn process(msg: &mqtt::Message, client: &Client) {
-    if let Some(data) = parse(msg) {
-        publish(&data, client).await;
+    if let Some(reading) = parse(msg) {
+        publish(reading, client).await;
     }
 }
 
-fn parse(msg: &mqtt::Message) -> Option<Data> {
+fn parse(msg: &mqtt::Message) -> Option<Reading> {
     let message: String = msg.payload_str().into_owned();
     let front_fields: Vec<&str> = message.splitn(3, ",").collect();
 
@@ -50,7 +43,7 @@ fn parse(msg: &mqtt::Message) -> Option<Data> {
                     if json["event"] == "telemetry" {
                         let timestamp: i32 = serde_json::from_value(json["timestamp"].clone())
                             .expect("unable to parse timestamp");
-                        Some(Data {
+                        Some(Reading {
                             time: Utc.datetime_from_str(&timestamp.to_string(), "%s").unwrap(),
                             battery_voltage: serde_json::from_value(
                                 json["battery_voltage"].clone(),
@@ -62,6 +55,12 @@ fn parse(msg: &mqtt::Message) -> Option<Data> {
                                 json["cpu_temperature"].clone(),
                             )
                             .unwrap(),
+                            case_temperature: serde_json::from_value(
+                                json["case_temperature"].clone(),
+                            )
+                            .unwrap(),
+                            case_humidity: serde_json::from_value(json["case_humidity"].clone())
+                                .unwrap(),
                             rssi: rssi.parse().unwrap(),
                             snr: snr.parse().unwrap(),
                         })
@@ -82,16 +81,7 @@ fn parse(msg: &mqtt::Message) -> Option<Data> {
     }
 }
 
-async fn publish(data: &Data, client: &Client) {
-    let reading = Reading {
-        time: data.time,
-        battery_voltage: data.battery_voltage,
-        sonar_voltage: data.sonar_voltage,
-        cpu_temperature: data.cpu_temperature,
-        rssi: data.rssi,
-        snr: data.snr,
-    };
-
+async fn publish(reading: Reading, client: &Client) {
     let write_result = client.query(&reading.into_query("readings")).await;
     assert!(write_result.is_ok(), "Couldn't write data to InfluxDB");
 }
