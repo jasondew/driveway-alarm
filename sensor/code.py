@@ -8,27 +8,37 @@ import time
 
 from analogio import AnalogIn
 from simpleio import DigitalOut
+from adafruit_dht import DHT22
 
 led = neopixel.NeoPixel(board.NEOPIXEL, 1, brightness=0.05)
-uart = busio.UART(board.TX, board.RX, baudrate=115200, bits=8, parity=None, stop=1, timeout=10)
-battery = AnalogIn(board.A0)
-sonar = AnalogIn(board.A1)
+
+lora = busio.UART(board.TX, board.RX, baudrate=115200, bits=8, parity=None, stop=1, timeout=10)
 lora_reset = DigitalOut(board.D10)
 
-def cpu_temp():
-    return round(microcontroller.cpu.temperature * 10) / 10
-
-def battery_voltage():
-    return battery.value
-
-def sonar_voltage():
-    return sonar.value
+battery = AnalogIn(board.A0)
+sonar = AnalogIn(board.A1)
+dht22 = DHT22(board.D4)
 
 def led_on():
     led.fill((255, 0, 0))
 
 def led_off():
     led.fill((0, 0, 0))
+
+def cpu_temp():
+    return round(microcontroller.cpu.temperature * 10) / 10
+
+def case_temperature():
+    try:
+        return(dht22.temperature or 0.0)
+    except RuntimeError as e:
+        return 0.0
+
+def case_humidity():
+    try:
+        return(dht22.humidity or 0.0)
+    except RuntimeError as e:
+        return 0.0
 
 def reset_lora():
     print("Resetting LoRa...\n")
@@ -47,10 +57,8 @@ def reset_lora():
 def send_command(command, expected_response="OK"):
     print("> {}".format(command))
     command_bytes = bytes(command + "\r\n", "ascii")
-    uart.write(command_bytes)
+    lora.write(command_bytes)
     response = get_response()
-
-    print("< {}".format(response))
 
     if not response.endswith("+{}\r\n".format(expected_response)):
         print("[ERROR] received unexpected response: %s" % repr(response))
@@ -59,12 +67,14 @@ def send_command(command, expected_response="OK"):
         send_command(command)
 
 def get_response():
-    data = uart.readline()
+    data = lora.readline()
 
     if data is None:
         return None
     else:
-        return "".join([chr(b) for b in data])
+        response = "".join([chr(b) for b in data])
+        print("< {}".format(response))
+        return response
 
 def send_data(data):
     payload = json.dumps(data)
@@ -76,12 +86,14 @@ def send_telemetry():
     send_data({
         "event": "telemetry",
         "timestamp": time.time(),
-        "battery_voltage": battery_voltage(),
-        "sonar_voltage": sonar_voltage(),
-        "cpu_temperature": cpu_temp()
+        "battery_voltage": battery.value,
+        "sonar_voltage": sonar.value,
+        "cpu_temperature": cpu_temp(),
+        "case_temperature": case_temperature(),
+        "case_humidity": case_humidity(),
     })
 
-def setup_uart():
+def setup_lora():
     reset_lora()
     send_command("AT+FACTORY", "FACTORY")
     send_command("AT+NETWORKID=3")
@@ -103,7 +115,7 @@ def set_clock():
 
 # ENTRYPOINT
 
-setup_uart()
+setup_lora()
 while True:
     led_on()
     send_telemetry()
