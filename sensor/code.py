@@ -2,130 +2,174 @@ import board
 import busio
 import json
 import microcontroller
-import neopixel
 import rtc
 import time
 
-from analogio import AnalogIn
-from simpleio import DigitalOut
 from adafruit_dht import DHT22
+from analogio import AnalogIn
+from neopixel import NeoPixel
+from simpleio import DigitalOut
 
-led = neopixel.NeoPixel(board.NEOPIXEL, 1, brightness=0.05)
+class Device:
+    def __init__(self, battery_pin, sonar_pin, dht22_pin, led_pin, max_attempts=3):
+        self.battery = AnalogIn(battery_pin)
+        self.sonar = AnalogIn(sonar_pin)
+        self.dht22 = DHT22(dht22_pin)
+        self.led = NeoPixel(led_pin, 1, brightness=0.05)
+        self.max_attempts = max_attempts
 
-lora = busio.UART(board.TX, board.RX, baudrate=115200, bits=8, parity=None, stop=1, timeout=10)
-lora_reset = DigitalOut(board.D10)
+    def set_time(self, time):
+        rtc.RTC().datetime = time
 
-battery = AnalogIn(board.A0)
-sonar = AnalogIn(board.A1)
-dht22 = DHT22(board.D4)
+    def led_on(self, r, g, b):
+        self.led.fill((r, g, b))
 
-def led_on(color):
-    led.fill(color)
+    def led_off(self):
+        self.led.fill((0, 0, 0))
 
-def led_off():
-    led.fill((0, 0, 0))
+    def battery_voltage(self):
+        return self.battery.value
 
-def cpu_temp():
-    return round(microcontroller.cpu.temperature * 10) / 10
+    def sonar_voltage(self):
+        return self.sonar.value
 
-def case_temperature():
-    try:
-        return(dht22.temperature or 0.0)
-    except RuntimeError as e:
-        return 0.0
+    def cpu_temperature(self):
+        return round(microcontroller.cpu.temperature * 10) / 10
 
-def case_humidity():
-    try:
-        return(dht22.humidity or 0.0)
-    except RuntimeError as e:
-        return 0.0
+    def case_temperature(self, attempt=1):
+        return self.__retry(self.dht22, "temperature") or 0.0
 
-def reset_lora():
-    print("Resetting LoRa...\n")
-    lora_reset.value = False # active LOW
-    time.sleep(1) # must stay set for at least 100ms
-    lora_reset.value = True
-    while True:
-        response = get_response()
-        print("reset response: %s" % repr(response))
+    def case_humidity(self):
+        return self.__retry(self.dht22, "humidity") or 0.0
 
-        if get_response() is None:
-            print("reset successful.")
-            send_event("reset")
-            return
+    def __retry(self, obj, method, attempt=1):
+        if attempt > self.max_attempts:
+            return None
 
-def send_command(command, expected_response="OK"):
-    print("> {}".format(command))
-    command_bytes = bytes(command + "\r\n", "ascii")
-    lora.write(command_bytes)
-    response = get_response()
+        value = getattr(obj, method)
+        print("[attempt %d] value=%s" % (attempt, value))
 
-    if response is None or not response.endswith("+{}\r\n".format(expected_response)):
-        print("[ERROR] received unexpected response: %s" % repr(response))
-        reset_lora()
-        time.sleep(10)
-        send_command(command)
+        if value == 0.0:
+            time.sleep(1)
+            return self.__retry(obj, method, attempt + 1)
+        else:
+            return value
 
-def get_response():
-    data = lora.readline()
+class Radio:
+    def __init__(self, tx_pin, rx_pin, reset_pin):
+        self.sleeping = False
+        self.uart = busio.UART(tx_pin, rx_pin, baudrate=115200, bits=8, parity=None, stop=1, timeout=10)
+        self.lora_reset = DigitalOut(reset_pin)
+        self.startup()
 
-    if data is None:
-        return None
-    else:
-        response = "".join([chr(b) for b in data])
-        print("< {}".format(response))
-        return response
+    def startup(self):
+        self.reset()
+        self.send_command("AT+FACTORY", "FACTORY")
+        self.send_command("AT+NETWORKID=3")
+        self.send_command("AT+ADDRESS=1")
+        self.send_event("startup")
 
-def send_data(data):
-    payload = json.dumps(data)
-#    send_command("AT+MODE=0") # transmit and receive mode
-    send_command("AT+SEND=0,%s,%s" % (len(payload), payload))
-#    send_command("AT+MODE=1") # sleep mode
+    def reset(self):
+        print("Resetting radio...\n")
+        self.lora_reset.value = False # active LOW
+        time.sleep(1) # must stay set for at least 100ms
+        self.lora_reset.value = True
+        while True:
+            response = self.get_response()
 
-def send_event(name):
-    send_data({"event": name})
+            if self.get_response() is None:
+                print("Reset successful.\n")
+                self.send_event("reset")
+                return
 
-def send_telemetry():
-    send_data({
-        "event": "telemetry",
-        "timestamp": time.time(),
-        "battery_voltage": battery.value,
-        "sonar_voltage": sonar.value,
-        "cpu_temperature": cpu_temp(),
-        "case_temperature": case_temperature(),
-        "case_humidity": case_humidity(),
-    })
+    def sleep(self):
+        self.sleeping = True
 
-def setup_lora():
-    reset_lora()
-    send_command("AT+FACTORY", "FACTORY")
-    send_command("AT+NETWORKID=3")
-    send_command("AT+ADDRESS=1")
-    send_event("startup")
-    set_clock()
+    def wake(self):
+        self.sleeping = False
 
-def set_clock():
-    while True:
-        send_data({"jsonrpc": "2.0", "method": "get_time"})
-        response = get_response()
-        if response is not None:
-            break;
-    [_from, _length, rest] = response.split(",", 2)
-    [payload, _rssi, _snr] = rest.rsplit(",", 2)
-    data = json.loads(payload)
-    [year, month, day, hour, minute, second, day_of_week] = list(map(lambda value: int(value), data["result"].split("-")))
-    rtc.RTC().datetime = time.struct_time((year, month, day, hour, minute, second, day_of_week, -1, -1))
+    def send_command(self, command, valid_responses=None):
+        if valid_responses is None:
+            valid_responses = ["+OK"]
+
+        print("> {}".format(command))
+        command_bytes = bytes(command + "\r\n", "ascii")
+        self.uart.write(command_bytes)
+        response = self.get_response()
+
+        if response is None or not any(response.find(r) != -1 for r in valid_responses):
+            print("[ERROR] received unexpected response: %s" % repr(response))
+            self.reset()
+            time.sleep(10)
+            self.send_command(command)
+
+    def get_response(self):
+        data = self.uart.readline()
+
+        if data is None:
+            return None
+        else:
+            response = "".join([chr(b) for b in data])
+            print("< {}".format(response))
+            return response
+
+    def send_data(self, data):
+        if self.sleeping:
+            self.send_command("AT+MODE=0", ["+OK", "+MODE=0", "+READY"]) # transmit and receive mode
+            self.get_response()
+
+        payload = json.dumps(data)
+        self.send_command("AT+SEND=0,%s,%s" % (len(payload), payload), ["+OK", "+SEND"])
+
+        if self.sleeping:
+            self.send_command("AT+MODE=1", ["+OK", "+MODE=1", "+READY"]) # sleep mode
+
+    def send_event(self, name, data=None):
+        if data is None:
+            data = {}
+
+        data["event"] = name
+        self.send_data(data)
+
+    def send_telemetry(self, device):
+        self.send_data({
+            "event": "telemetry",
+            "timestamp": time.time(),
+            "battery_voltage": device.battery_voltage(),
+            "sonar_voltage": device.sonar_voltage(),
+            "cpu_temperature": device.cpu_temperature(),
+            "case_temperature": device.case_temperature(),
+            "case_humidity": device.case_humidity(),
+        })
+
+    def get_time(self):
+        while True:
+            self.send_data({"jsonrpc": "2.0", "method": "get_time"})
+            response = self.get_response()
+            if response is not None:
+                break;
+        [_from, _length, rest] = response.split(",", 2)
+        [payload, _rssi, _snr] = rest.rsplit(",", 2)
+        data = json.loads(payload)
+        [year, month, day, hour, minute, second, day_of_week] = list(map(lambda value: int(value), data["result"].split("-")))
+        return time.struct_time((year, month, day, hour, minute, second, day_of_week, -1, -1))
 
 # ENTRYPOINT
 
 counter = 0
 triggered = False
 triggered_for = 0
-led_on((0, 255, 0))
-setup_lora()
+
+device = Device(battery_pin=board.A0, sonar_pin=board.A1, dht22_pin=board.D4, led_pin=board.NEOPIXEL)
+device.led_on(0, 255, 0)
+
+radio = Radio(board.TX, board.RX, board.D10)
+device.set_time(radio.get_time())
+
+radio.sleep()
 
 while True:
-    led_off()
+    device.led_off()
 
     if triggered:
         if triggered_for > 60:
@@ -134,14 +178,15 @@ while True:
         else:
             triggered_for += 1
     else:
-        if (sonar.value / 1962) < 3.0:
-            led_on((255, 0, 0))
-            send_event("triggered")
+        sonar_voltage = device.sonar_voltage()
+        if (sonar_voltage / 1962) < 3.0:
+            device.led_on(255, 0, 0)
+            radio.send_event("triggered", {"sonar_voltage": sonar_voltage})
             triggered = True
 
-    if counter >= 60:
-        led_on((0, 0, 255))
-        send_telemetry()
+    if counter >= 60 * 10:
+        device.led_on(0, 0, 255)
+        radio.send_telemetry(device)
         counter = 0
     else:
         counter += 1
