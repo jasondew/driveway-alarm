@@ -2,7 +2,7 @@ extern crate paho_mqtt as mqtt;
 
 use chrono::{DateTime, TimeZone, Utc};
 use influxdb::{Client, InfluxDbWriteable};
-use std::{process, thread, time::Duration};
+use std::{env, process, thread, time::Duration};
 
 const TOPIC: &str = "driveway-alarm/transmission";
 const QOS: i32 = 1;
@@ -41,11 +41,19 @@ async fn process(msg: &mqtt::Message, client: &Client) {
                     println!("Error publishing telemetry!");
                 }
             }
-            "triggered" => {}
-            "startup" => {}
-            "reset" => {}
-            event => {
-                println!("Received unknown event: {}", event);
+            _event => {
+                if let Ok(key) = env::var("IFTTT_KEY") {
+                    let url = format!(
+                        "https://maker.ifttt.com/trigger/push_notification/json/with/key/{}",
+                        key
+                    );
+
+                    minreq::post(url)
+                        .with_header("Content-Type", "application/json")
+                        .with_body(message.data.to_string())
+                        .send()
+                        .unwrap();
+                }
             }
         }
     }
