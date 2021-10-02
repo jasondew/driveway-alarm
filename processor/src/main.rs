@@ -7,6 +7,14 @@ use std::{process, thread, time::Duration};
 const TOPIC: &str = "driveway-alarm/transmission";
 const QOS: i32 = 1;
 
+#[derive(Debug)]
+struct Message {
+    from: String,
+    rssi: i32,
+    snr: i32,
+    data: serde_json::Value,
+}
+
 #[derive(InfluxDbWriteable)]
 struct Reading {
     time: DateTime<Utc>,
@@ -20,54 +28,43 @@ struct Reading {
 }
 
 async fn process(msg: &mqtt::Message, client: &Client) {
-    if let Some(reading) = parse(msg) {
-        publish(reading, client).await;
+    if let Some(message) = parse(msg) {
+        println!(
+            "MESSAGE (from={} rssi={} snr={}): {}",
+            message.from, message.rssi, message.snr, message.data
+        );
+        match message.data["event"].as_str().unwrap() {
+            "telemetry" => {
+                if let Some(reading) = parse_reading(&message) {
+                    publish(reading, client).await;
+                } else {
+                    println!("Error publishing telemetry!");
+                }
+            }
+            "triggered" => {}
+            "startup" => {}
+            "reset" => {}
+            event => {
+                println!("Received unknown event: {}", event);
+            }
+        }
     }
 }
 
-fn parse(msg: &mqtt::Message) -> Option<Reading> {
+fn parse(msg: &mqtt::Message) -> Option<Message> {
     let message: String = msg.payload_str().into_owned();
     let front_fields: Vec<&str> = message.splitn(3, ",").collect();
 
     match front_fields[..] {
-        [from, length, payload_and_back_fields] => {
+        [from, _length, payload_and_back_fields] => {
             let back_fields: Vec<&str> = payload_and_back_fields.rsplitn(3, ",").collect();
             match back_fields[..] {
-                [snr, rssi, payload] => {
-                    let json: serde_json::Value = serde_json::from_str(payload).unwrap();
-                    println!(
-                        "MESSAGE (from={} length={} rssi={} snr={}): {}",
-                        from, length, rssi, snr, json
-                    );
-
-                    if json["event"] == "telemetry" {
-                        let timestamp: i32 = serde_json::from_value(json["timestamp"].clone())
-                            .expect("unable to parse timestamp");
-                        Some(Reading {
-                            time: Utc.datetime_from_str(&timestamp.to_string(), "%s").unwrap(),
-                            battery_voltage: serde_json::from_value(
-                                json["battery_voltage"].clone(),
-                            )
-                            .unwrap(),
-                            sonar_voltage: serde_json::from_value(json["sonar_voltage"].clone())
-                                .unwrap(),
-                            cpu_temperature: serde_json::from_value(
-                                json["cpu_temperature"].clone(),
-                            )
-                            .unwrap(),
-                            case_temperature: serde_json::from_value(
-                                json["case_temperature"].clone(),
-                            )
-                            .unwrap_or(0.0),
-                            case_humidity: serde_json::from_value(json["case_humidity"].clone())
-                                .unwrap_or(0.0),
-                            rssi: rssi.parse().unwrap(),
-                            snr: snr.parse().unwrap(),
-                        })
-                    } else {
-                        None
-                    }
-                }
+                [snr, rssi, payload] => Some(Message {
+                    from: from.to_string(),
+                    rssi: rssi.parse().unwrap(),
+                    snr: snr.parse().unwrap(),
+                    data: serde_json::from_str(payload).unwrap(),
+                }),
                 _ => {
                     println!("INVALID MESSAGE: {}", message);
                     None
@@ -79,6 +76,22 @@ fn parse(msg: &mqtt::Message) -> Option<Reading> {
             None
         }
     }
+}
+
+fn parse_reading(message: &Message) -> Option<Reading> {
+    let timestamp: i32 = serde_json::from_value(message.data["timestamp"].clone())
+        .expect("unable to parse timestamp");
+    Some(Reading {
+        time: Utc.datetime_from_str(&timestamp.to_string(), "%s").unwrap(),
+        battery_voltage: serde_json::from_value(message.data["battery_voltage"].clone()).unwrap(),
+        sonar_voltage: serde_json::from_value(message.data["sonar_voltage"].clone()).unwrap(),
+        cpu_temperature: serde_json::from_value(message.data["cpu_temperature"].clone()).unwrap(),
+        case_temperature: serde_json::from_value(message.data["case_temperature"].clone())
+            .unwrap_or(0.0),
+        case_humidity: serde_json::from_value(message.data["case_humidity"].clone()).unwrap_or(0.0),
+        rssi: message.rssi,
+        snr: message.snr,
+    })
 }
 
 async fn publish(reading: Reading, client: &Client) {
