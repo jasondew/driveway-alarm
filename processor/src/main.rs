@@ -58,9 +58,9 @@ fn parse(msg: &mqtt::Message) -> Option<Reading> {
                             case_temperature: serde_json::from_value(
                                 json["case_temperature"].clone(),
                             )
-                            .unwrap(),
+                            .unwrap_or(0.0),
                             case_humidity: serde_json::from_value(json["case_humidity"].clone())
-                                .unwrap(),
+                                .unwrap_or(0.0),
                             rssi: rssi.parse().unwrap(),
                             snr: snr.parse().unwrap(),
                         })
